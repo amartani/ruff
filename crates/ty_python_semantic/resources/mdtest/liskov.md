@@ -620,3 +620,76 @@ class MaybeEqWhile:
         def __eq__(self, other: MaybeEqWhile) -> bool:
             return True
 ```
+
+## Overloads with disjoint self types
+
+When a superclass method has overloads with different `self` type annotations, overloads whose
+`self` type is disjoint from the subclass should be ignored when checking method overrides.
+
+For example, `str.__iter__` has an overload with `self: LiteralString` that returns
+`Iterator[LiteralString]`. Since `LiteralString` must be an instance of exactly `str` (not a
+subclass), this overload is disjoint from any `str` subclass and should be ignored.
+
+```py
+from __future__ import annotations
+
+from collections.abc import Iterator
+
+class MyStr(str):
+    # This is valid: we only need to satisfy the `def __iter__(self) -> Iterator[str]` overload,
+    # not the `def __iter__(self: LiteralString) -> Iterator[LiteralString]` overload.
+    def __iter__(self) -> Iterator[str]:
+        raise NotImplementedError
+
+class MyBytes(bytes):
+    # Similarly for bytes.__iter__
+    def __iter__(self) -> Iterator[int]:
+        raise NotImplementedError
+```
+
+When the self type in an overload refers to a class that is not `@final`, the overload must still be
+considered because a subclass could potentially be an instance of both the subclass and the self
+type class (through multiple inheritance).
+
+```py
+from typing import overload
+
+class Foo:
+    @overload
+    def method(self: "Bar") -> "Iterator[Bar]": ...
+    @overload
+    def method(self: "Foo") -> "Iterator[Foo]": ...
+    def method(self) -> "Iterator[Foo] | Iterator[Bar]":
+        raise NotImplementedError
+
+class Bar: ...
+
+class Baz(Foo):
+    # error: [invalid-method-override] "Invalid override of method `method`"
+    def method(self) -> "Iterator[Foo]":
+        raise NotImplementedError
+```
+
+However, when the self type class is marked as `@final`, the overload can be safely ignored because
+no subclass can also be an instance of the final class.
+
+```py
+from typing import final, overload
+
+class Foo2:
+    @overload
+    def method(self: "FinalBar") -> "Iterator[FinalBar]": ...
+    @overload
+    def method(self: "Foo2") -> "Iterator[Foo2]": ...
+    def method(self) -> "Iterator[Foo2] | Iterator[FinalBar]":
+        raise NotImplementedError
+
+@final
+class FinalBar: ...
+
+class Baz2(Foo2):
+    # This is valid: FinalBar is @final, so no subclass of Foo2 can also be a FinalBar.
+    # Therefore, the `self: FinalBar` overload is disjoint from any Foo2 subclass.
+    def method(self) -> "Iterator[Foo2]":
+        raise NotImplementedError
+```

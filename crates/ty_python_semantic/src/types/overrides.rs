@@ -21,8 +21,8 @@ use crate::{
         use_def_map,
     },
     types::{
-        CallableType, ClassBase, ClassType, KnownClass, Parameter, Parameters, Signature,
-        StaticClassLiteral, Type,
+        CallableType, CallableTypeKind, ClassBase, ClassType, KnownClass, Parameter, Parameters,
+        Signature, StaticClassLiteral, Type,
         class::{CodeGeneratorKind, FieldKind},
         context::InferContext,
         diagnostic::{
@@ -32,6 +32,7 @@ use crate::{
         },
         function::{FunctionDecorators, FunctionType, KnownFunction},
         list_members::{Member, MemberWithDefinition, all_end_of_scope_members},
+        signatures::CallableSignature,
     },
 };
 
@@ -309,7 +310,39 @@ fn check_class_declaration<'db>(
             continue;
         }
 
-        let Some(superclass_type_as_callable) = superclass_type.try_upcast_to_callable(db) else {
+        // For bound methods, filter out overloads whose self type is disjoint from the
+        // subclass instance type before checking assignability. For example, `str.__iter__`
+        // has an overload with `self: LiteralString`, which is disjoint from any `str`
+        // subclass. We should ignore such overloads when checking if the subclass method
+        // is a valid override.
+        let superclass_type_filtered = if let Type::BoundMethod(bound_method) = superclass_type {
+            let function = bound_method.function(db);
+            let filtered_signature = function
+                .signature(db)
+                .filter_overloads_for_receiver(db, instance_of_class);
+
+            if let Some(filtered) = filtered_signature {
+                // Create a new callable with the filtered overloads, bound to the subclass instance
+                Type::Callable(CallableType::new(
+                    db,
+                    CallableSignature::from_overloads(
+                        filtered
+                            .overloads
+                            .iter()
+                            .map(|sig| sig.bind_self(db, Some(instance_of_class))),
+                    ),
+                    CallableTypeKind::FunctionLike,
+                ))
+            } else {
+                // If all overloads were filtered out, use the original type
+                superclass_type
+            }
+        } else {
+            superclass_type
+        };
+
+        let Some(superclass_type_as_callable) = superclass_type_filtered.try_upcast_to_callable(db)
+        else {
             continue;
         };
 
